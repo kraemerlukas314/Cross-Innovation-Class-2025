@@ -4,6 +4,22 @@ import sys
 import cv2
 import numpy as np
 
+# --- Dependency Check for numpy-stl ---
+try:
+    from stl import mesh
+except ImportError:
+    print("Error: Could not import 'mesh' from 'stl'. Ensure 'numpy-stl' is installed correctly.")
+    print("Run 'pip install numpy-stl' in your terminal.")
+    sys.exit(1)
+
+# --- Dependency Check for scikit-image ---
+try:
+    from skimage import measure
+except ImportError:
+    print("Error: Could not import 'measure' from 'skimage'. This is needed for 3D model generation.")
+    print("Run 'pip install scikit-image' in your terminal.")
+    sys.exit(1)
+
 UI_FOLDER = "ui elements"
 
 class FullscreenUI:
@@ -30,10 +46,12 @@ class FullscreenUI:
         self.main_loop()
 
     def load_image(self, filename):
+        """Loads an image from the UI folder."""
         path = os.path.join(UI_FOLDER, filename)
         return pygame.image.load(path).convert_alpha()
 
     def load_images(self):
+        """Loads all UI images and defines their positions."""
         self.images['main'] = self.load_image("main.png")
         self.images['scan'] = self.load_image("scan.png")
         self.images['premodel'] = self.load_image("premodel.png")
@@ -49,15 +67,18 @@ class FullscreenUI:
         self.pause_rect = self.images['pause'].get_rect(midbottom=(screen_width // 2, screen_height - 50))
 
     def draw_main_menu(self):
+        """Draws the main menu screen."""
         self.screen.blit(self.images['main'], (0, 0))
         self.screen.blit(self.images['scan'], self.scan_rect.topleft)
         self.screen.blit(self.images['premodel'], self.premodel_rect.topleft)
 
     def draw_white_screen_with_cancel(self):
+        """Draws a white screen with a cancel button."""
         self.screen.fill((255, 255, 255))
         self.screen.blit(self.images['cancel'], self.cancel_rect.topleft)
 
     def draw_camera_preview(self):
+        """Draws the live camera feeds."""
         self.screen.fill((255, 255, 255))
         if self.frame0 is not None:
             surf0 = self.cv_to_pygame(self.frame0)
@@ -68,6 +89,7 @@ class FullscreenUI:
         self.screen.blit(self.images['pause'], self.pause_rect.topleft)
 
     def draw_mask_preview(self):
+        """Draws the generated binary masks."""
         self.screen.fill((255, 255, 255))
         if self.mask0 is not None:
             surf0 = self.gray_to_pygame(self.mask0)
@@ -78,6 +100,7 @@ class FullscreenUI:
         self.screen.blit(self.images['pause'], self.pause_rect.topleft)
 
     def draw_normalized_preview(self):
+        """Draws the final, normalized masks before 3D generation."""
         self.screen.fill((255, 255, 255))
         if self.normalized_mask0 is not None:
             surf0 = self.gray_to_pygame(self.normalized_mask0)
@@ -88,16 +111,19 @@ class FullscreenUI:
         self.screen.blit(self.images['pause'], self.pause_rect.topleft)
 
     def cv_to_pygame(self, frame):
+        """Converts an OpenCV (BGR) image to a Pygame surface."""
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_rgb = cv2.resize(frame_rgb, (400, 300))
         return pygame.image.frombuffer(frame_rgb.tobytes(), frame_rgb.shape[1::-1], 'RGB')
 
     def gray_to_pygame(self, gray_img):
+        """Converts an OpenCV grayscale image to a Pygame surface."""
         resized = cv2.resize(gray_img, (400, 300))
         rgb_img = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
         return pygame.image.frombuffer(rgb_img.tobytes(), rgb_img.shape[1::-1], 'RGB')
 
     def handle_events(self):
+        """Handles all user input events."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 self.running = False
@@ -124,7 +150,13 @@ class FullscreenUI:
                         self.normalized_mask2 = self.normalize_mask(self.mask2)
                         self.current_screen = "normalized_mask"
 
+                elif self.current_screen == "normalized_mask":
+                    if self.pause_rect.collidepoint(event.pos):
+                        self.generate_stl()
+                        self.current_screen = "main_menu"
+
     def start_camera_feeds(self):
+        """Initializes and opens camera devices."""
         self.cap0 = cv2.VideoCapture(0)
         self.cap2 = cv2.VideoCapture(2)
         if not self.cap0.isOpened():
@@ -136,6 +168,7 @@ class FullscreenUI:
         self.current_screen = "scanner"
 
     def snap_image(self):
+        """Captures images from cameras and generates initial masks."""
         if self.frame0 is not None and self.frame2 is not None:
             cv2.imwrite("snapshot_cam0.png", self.frame0)
             cv2.imwrite("snapshot_cam2.png", self.frame2)
@@ -152,9 +185,10 @@ class FullscreenUI:
             cv2.destroyAllWindows()
 
     def process_mask(self, image):
+        """Converts an image to a clean, filled, binary mask of the largest object."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, binary = cv2.threshold(blurred, 110, 255, cv2.THRESH_BINARY_INV)
+        _, binary = cv2.threshold(blurred, 80, 255, cv2.THRESH_BINARY_INV)
 
         kernel = np.ones((3, 3), np.uint8)
         cleaned = cv2.erode(binary, kernel, iterations=1)
@@ -170,16 +204,14 @@ class FullscreenUI:
         return mask
 
     def normalize_mask(self, mask):
+        """Rotates, crops, and scales a mask to a standard size and position."""
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return mask
 
         largest = max(contours, key=cv2.contourArea)
         rect = cv2.minAreaRect(largest)
-        box = cv2.boxPoints(rect)
-        box = box.astype(np.intp)
-
-
+        
         angle = rect[2]
         if rect[1][0] < rect[1][1]:
             angle += 90
@@ -206,7 +238,60 @@ class FullscreenUI:
 
         return canvas
 
+    def generate_stl(self):
+        """
+        Generates a 3D model (STL) from the side and top view masks using voxel carving.
+        This method computes the visual hull from the two silhouettes.
+        """
+        if self.normalized_mask0 is None or self.normalized_mask2 is None:
+            print("No normalized masks available to generate STL.")
+            return
+
+        print("Generating 3D model... This may take a moment.")
+
+        # Define the resolution of our voxel space. Higher values are more detailed but slower.
+        z_dim, y_dim, x_dim = 100, 100, 75
+
+        # Resize masks to the voxel space dimensions for processing
+        # cv2.resize takes (width, height)
+        side_mask_resized = cv2.resize(self.normalized_mask0, (x_dim, y_dim), interpolation=cv2.INTER_NEAREST)
+        top_mask_resized = cv2.resize(self.normalized_mask2, (x_dim, z_dim), interpolation=cv2.INTER_NEAREST)
+
+        # Convert to boolean masks (True means solid)
+        side_silhouette = side_mask_resized > 128  # Shape: (y_dim, x_dim)
+        top_silhouette = top_mask_resized > 128    # Shape: (z_dim, x_dim)
+
+        # Extrude side view (y,x) along the Z axis to form a 3D volume
+        volume_from_side = np.broadcast_to(side_silhouette[np.newaxis, :, :], (z_dim, y_dim, x_dim))
+
+        # Extrude top view (z,x) along the Y axis to form another 3D volume
+        volume_from_top = np.broadcast_to(top_silhouette[:, np.newaxis, :], (z_dim, y_dim, x_dim))
+
+        # The final object is the logical intersection (AND) of these two volumes
+        volume = np.logical_and(volume_from_side, volume_from_top)
+
+        # Pad the volume to ensure marching_cubes generates a closed mesh at the borders
+        volume = np.pad(volume, 1, constant_values=False)
+
+        # Use the marching cubes algorithm to extract a surface mesh from the voxel volume
+        # The `spacing` argument scales the model to reflect the original aspect ratio
+        spacing_z = 400.0 / z_dim
+        spacing_y = 400.0 / y_dim
+        spacing_x = 300.0 / x_dim
+        verts, faces, normals, values = measure.marching_cubes(volume, level=0.5, spacing=(spacing_z, spacing_y, spacing_x))
+
+        # Create the STL mesh object
+        stl_mesh = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype))
+        for i, f in enumerate(faces):
+            stl_mesh.vectors[i] = verts[f]
+
+        # Save the final mesh to an STL file
+        stl_mesh.save('/home/pi/repo/model.stl')
+        print("STL file saved as 'model.stl'")
+
+
     def update_camera_frames(self):
+        """Reads the latest frames from the active cameras."""
         if self.camera_active:
             ret0, frame0 = self.cap0.read()
             ret2, frame2 = self.cap2.read()
@@ -216,10 +301,12 @@ class FullscreenUI:
                 self.frame2 = frame2.copy()
 
     def main_loop(self):
+        """The main application loop."""
         while self.running:
             self.handle_events()
             self.update_camera_frames()
 
+            # --- Screen Drawing ---
             if self.current_screen == "main_menu":
                 self.draw_main_menu()
             elif self.current_screen == "white_cancel":
@@ -234,9 +321,10 @@ class FullscreenUI:
             pygame.display.flip()
             self.clock.tick(30)
 
-        if hasattr(self, 'cap0'):
+        # --- Cleanup on Exit ---
+        if hasattr(self, 'cap0') and self.cap0.isOpened():
             self.cap0.release()
-        if hasattr(self, 'cap2'):
+        if hasattr(self, 'cap2') and self.cap2.isOpened():
             self.cap2.release()
         cv2.destroyAllWindows()
         pygame.quit()

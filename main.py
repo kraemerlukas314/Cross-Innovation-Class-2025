@@ -23,6 +23,8 @@ class FullscreenUI:
         self.frame2 = None
         self.mask0 = None
         self.mask2 = None
+        self.normalized_mask0 = None
+        self.normalized_mask2 = None
 
         self.load_images()
         self.main_loop()
@@ -75,6 +77,16 @@ class FullscreenUI:
             self.screen.blit(surf2, surf2.get_rect(topright=(self.screen.get_width() - 50, 100)))
         self.screen.blit(self.images['pause'], self.pause_rect.topleft)
 
+    def draw_normalized_preview(self):
+        self.screen.fill((255, 255, 255))
+        if self.normalized_mask0 is not None:
+            surf0 = self.gray_to_pygame(self.normalized_mask0)
+            self.screen.blit(surf0, surf0.get_rect(topleft=(50, 100)))
+        if self.normalized_mask2 is not None:
+            surf2 = self.gray_to_pygame(self.normalized_mask2)
+            self.screen.blit(surf2, surf2.get_rect(topright=(self.screen.get_width() - 50, 100)))
+        self.screen.blit(self.images['pause'], self.pause_rect.topleft)
+
     def cv_to_pygame(self, frame):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_rgb = cv2.resize(frame_rgb, (400, 300))
@@ -105,6 +117,12 @@ class FullscreenUI:
                 elif self.current_screen == "scanner":
                     if self.pause_rect.collidepoint(event.pos):
                         self.snap_image()
+
+                elif self.current_screen == "preview_mask":
+                    if self.pause_rect.collidepoint(event.pos):
+                        self.normalized_mask0 = self.normalize_mask(self.mask0)
+                        self.normalized_mask2 = self.normalize_mask(self.mask2)
+                        self.current_screen = "normalized_mask"
 
     def start_camera_feeds(self):
         self.cap0 = cv2.VideoCapture(0)
@@ -151,6 +169,43 @@ class FullscreenUI:
 
         return mask
 
+    def normalize_mask(self, mask):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return mask
+
+        largest = max(contours, key=cv2.contourArea)
+        rect = cv2.minAreaRect(largest)
+        box = cv2.boxPoints(rect)
+        box = box.astype(np.intp)
+
+
+        angle = rect[2]
+        if rect[1][0] < rect[1][1]:
+            angle += 90
+
+        (h, w) = mask.shape
+        center = (w // 2, h // 2)
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        rotated = cv2.warpAffine(mask, rotation_matrix, (w, h), flags=cv2.INTER_NEAREST)
+
+        contours, _ = cv2.findContours(rotated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        largest = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest)
+        cropped = rotated[y:y+h, x:x+w]
+
+        TARGET_WIDTH = 300
+        scale = TARGET_WIDTH / w
+        new_size = (TARGET_WIDTH, int(h * scale))
+        resized = cv2.resize(cropped, new_size, interpolation=cv2.INTER_NEAREST)
+
+        canvas = np.zeros((400, 300), dtype=np.uint8)
+        y_offset = (canvas.shape[0] - resized.shape[0]) // 2
+        x_offset = (canvas.shape[1] - resized.shape[1]) // 2
+        canvas[y_offset:y_offset + resized.shape[0], x_offset:x_offset + resized.shape[1]] = resized
+
+        return canvas
+
     def update_camera_frames(self):
         if self.camera_active:
             ret0, frame0 = self.cap0.read()
@@ -173,6 +228,8 @@ class FullscreenUI:
                 self.draw_camera_preview()
             elif self.current_screen == "preview_mask":
                 self.draw_mask_preview()
+            elif self.current_screen == "normalized_mask":
+                self.draw_normalized_preview()
 
             pygame.display.flip()
             self.clock.tick(30)

@@ -12,22 +12,10 @@ from skimage import measure
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import art3d
 
-# --- Constants for Configuration ---
-
-# Set to True to rotate the display 180 degrees, False for no rotation.
-ROTATE_SCREEN = True
-
-# Adjust the color detection sensitivity for creating masks.
-# Lower values are more sensitive to darker colors. Range: 0-255.
+ROTATE_SCREEN = False
 COLOR_THRESHOLD = 60
-
-# Adjust the brightness of the LED strip.
-# Value is a percentage (0.0 to 1.0). 0.3 means 30% brightness.
 LED_BRIGHTNESS = 0.3
-# --- End of Constants ---
 
-
-# Initialize the Pi5Neo class with 144 LEDs and an SPI speed of 800kHz
 neo = Pi5Neo('/dev/spidev0.0', 144, 800)
 
 UI_FOLDER = "ui elements"
@@ -35,11 +23,9 @@ UI_FOLDER = "ui elements"
 class FullscreenUI:
     def __init__(self):
         pygame.init()
-        # Set up the main display screen
         self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         self.screen_width, self.screen_height = self.screen.get_size()
         
-        # Create a virtual screen for potential rotation
         self.virtual_screen = pygame.Surface((self.screen_width, self.screen_height))
         
         pygame.display.set_caption("Image GUI")
@@ -58,11 +44,10 @@ class FullscreenUI:
         self.normalized_mask2 = None
         self.stl_preview_surface = None
         self.progress = 0
+        self.loading_start_time = 0 
         
-        # Calculate LED brightness value from the constant
         self.led_value = int(255 * LED_BRIGHTNESS)
 
-        # Initialize cameras on startup
         self.cap0 = cv2.VideoCapture(0)
         self.cap2 = cv2.VideoCapture(2)
         if not self.cap0.isOpened():
@@ -70,7 +55,6 @@ class FullscreenUI:
         if not self.cap2.isOpened():
             print("Failed to open /dev/video2")
 
-        # Ensure LEDs are off at the start
         neo.fill_strip(0, 0, 0)
         neo.update_strip()
 
@@ -91,33 +75,43 @@ class FullscreenUI:
         self.images['cancel'] = self.load_image("cancel_3.png")
         self.images['next'] = self.load_image("next_orange.png")
         self.images['try_again'] = self.load_image("try_again.png")
-        self.images['package_design'] = self.load_image("start packaging design_orange.png")
-
+        
         self.scan_rect = self.images['scan'].get_rect(topleft=(510, 100))
         self.premodel_rect = self.images['premodel'].get_rect(topleft=(165, 100))
         self.cancel_rect = self.images['cancel'].get_rect(center=(self.screen_width // 2, self.screen_height // 2))
         
-        # --- Change: Center buttons below their respective preview windows ---
-        # Preview windows are 400x300. Left one starts at x=50, right one ends at screen_width-50
-        # Calculate center x for each preview window
         left_preview_center_x = 50 + 400 // 2
         right_preview_center_x = (self.screen_width - 50) - 400 // 2
+        button_y_pos_preview = 100 + 300 + 80
         
-        # Y position for buttons below the previews (previews are at y=100, height=300)
-        button_y_pos = 100 + 300 + 80 # 60 pixels below the previews
-        
-        # "Try Again" button centered under the left preview
-        self.try_again_rect = self.images['try_again'].get_rect(center=(left_preview_center_x, button_y_pos))
-        
-        # "next/Continue" button centered under the right preview
-        self.next_rect = self.images['next'].get_rect(center=(right_preview_center_x, button_y_pos))
+        self.try_again_rect = self.images['try_again'].get_rect(center=(left_preview_center_x, button_y_pos_preview))
+        self.next_rect = self.images['next'].get_rect(center=(right_preview_center_x, button_y_pos_preview))
+        self.done_next_rect = self.images['next'].get_rect(center=(self.screen_width // 2, self.screen_height - 100))
 
-        # --- Change: Adjust button positions on the final STL preview screen ---
-        # Move "Try Again" further to the left
-        self.stl_try_again_rect = self.images['try_again'].get_rect(bottomleft=(20, self.screen_height - 30))
+        # --- FIX: Position STL Screen Buttons with Fixed Coordinates ---
         
-        # Move "Start Packaging Design" further to the right
-        self.package_rect = self.images['package_design'].get_rect(bottomright=(self.screen_width - 20, self.screen_height - 30))
+        # 1. Set a standard height for consistency.
+        reference_height = self.images['try_again'].get_height()
+
+        # 2. Create the "Try Again" button for the STL screen.
+        try_again_stl_img = self.load_image("try_again.png")
+        w, h = try_again_stl_img.get_size()
+        new_width = int(w * (reference_height / h)) if h > 0 else w
+        self.images['stl_try_again'] = pygame.transform.scale(try_again_stl_img, (new_width, reference_height))
+        
+        # 3. Create the "Start Packaging Design" button.
+        pkg_design_img = self.load_image("start packaging design_orange.png")
+        w, h = pkg_design_img.get_size()
+        new_width = int(w * (reference_height / h)) if h > 0 else w
+        self.images['stl_package_design'] = pygame.transform.scale(pkg_design_img, (new_width, reference_height))
+
+        # 4. Position the buttons using explicit (x, y) coordinates.
+        #    You can manually adjust the (x, y) values in the topleft tuples below.
+        
+        self.stl_try_again_rect = self.images['stl_try_again'].get_rect(topleft=(30, 400))
+
+        self.package_rect = self.images['stl_package_design'].get_rect(topleft=(350, 400))
+        # --- End of button fix ---
 
 
     def draw_main_menu(self):
@@ -135,7 +129,6 @@ class FullscreenUI:
     def draw_camera_preview(self):
         """Draws the live camera feeds."""
         self.virtual_screen.fill((255, 255, 255))
-        # Turn LEDs on for preview using the brightness constant
         neo.fill_strip(self.led_value, self.led_value, self.led_value)
         neo.update_strip()
         
@@ -146,7 +139,6 @@ class FullscreenUI:
             surf2 = self.cv_to_pygame(self.frame2)
             self.virtual_screen.blit(surf2, surf2.get_rect(topright=(self.virtual_screen.get_width() - 50, 100)))
             
-        # Draw buttons in their new positions
         self.virtual_screen.blit(self.images['try_again'], self.try_again_rect.topleft)
         self.virtual_screen.blit(self.images['next'], self.next_rect.topleft)
 
@@ -160,7 +152,6 @@ class FullscreenUI:
             surf2 = self.gray_to_pygame(self.mask2)
             self.virtual_screen.blit(surf2, surf2.get_rect(topright=(self.virtual_screen.get_width() - 50, 100)))
             
-        # Draw buttons in their new positions
         self.virtual_screen.blit(self.images['try_again'], self.try_again_rect.topleft)
         self.virtual_screen.blit(self.images['next'], self.next_rect.topleft)
 
@@ -174,7 +165,6 @@ class FullscreenUI:
             surf2 = self.gray_to_pygame(self.normalized_mask2)
             self.virtual_screen.blit(surf2, surf2.get_rect(topright=(self.virtual_screen.get_width() - 50, 100)))
             
-        # Draw buttons in their new positions
         self.virtual_screen.blit(self.images['try_again'], self.try_again_rect.topleft)
         self.virtual_screen.blit(self.images['next'], self.next_rect.topleft)
 
@@ -193,16 +183,31 @@ class FullscreenUI:
         if self.stl_preview_surface:
             preview_rect = self.stl_preview_surface.get_rect(center=(self.screen_width // 2, self.screen_height // 2 - 50))
             
-            # Draw a rounded rectangle around the preview
             border_rect = preview_rect.inflate(20, 20)
             pygame.draw.rect(self.virtual_screen, (220, 220, 220), border_rect, border_radius=15)
             
-            # Draw the STL preview on top of the rounded rectangle
             self.virtual_screen.blit(self.stl_preview_surface, preview_rect)
             
-        # Use the specially positioned rects for the STL screen
-        self.virtual_screen.blit(self.images['try_again'], self.stl_try_again_rect.topleft)
-        self.virtual_screen.blit(self.images['package_design'], self.package_rect.topleft)
+        self.virtual_screen.blit(self.images['stl_try_again'], self.stl_try_again_rect)
+        self.virtual_screen.blit(self.images['stl_package_design'], self.package_rect)
+
+    def draw_cutting_screen(self):
+        """Draws the orange loading screen for cutting."""
+        self.virtual_screen.fill((255, 140, 0)) # Orange background
+        font = pygame.font.Font(None, 50)
+        text = font.render("Cutting packaging material...", True, (255, 255, 255))
+        text_rect = text.get_rect(center=(self.screen_width // 2, self.screen_height // 2 - 50))
+        self.virtual_screen.blit(text, text_rect)
+        self.draw_progress_bar(self.progress)
+
+    def draw_cutting_done_screen(self):
+        """Draws the confirmation screen after cutting is finished."""
+        self.virtual_screen.fill((255, 255, 255))
+        font = pygame.font.Font(None, 45)
+        text = font.render("Done cutting material. Please take it out of the machine.", True, (0, 0, 0))
+        text_rect = text.get_rect(center=(self.screen_width // 2, self.screen_height // 2))
+        self.virtual_screen.blit(text, text_rect)
+        self.virtual_screen.blit(self.images['next'], self.done_next_rect.topleft)
 
     def draw_progress_bar(self, progress):
         """Draws a rounded, orange progress bar."""
@@ -211,13 +216,19 @@ class FullscreenUI:
         bar_x = (self.screen_width - bar_width) // 2
         bar_y = self.screen_height // 2
         
+        bg_color = (200, 200, 200)
+        progress_color = (255, 140, 0)
+        if self.current_screen == 'cutting_material':
+            bg_color = (200, 100, 0) # Darker orange
+            progress_color = (255, 255, 255) # White progress
+
         bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
-        pygame.draw.rect(self.virtual_screen, (200, 200, 200), bg_rect, border_radius=15)
+        pygame.draw.rect(self.virtual_screen, bg_color, bg_rect, border_radius=15)
 
         progress_width = int(bar_width * progress)
         if progress_width > 0:
             progress_rect = pygame.Rect(bar_x, bar_y, progress_width, bar_height)
-            pygame.draw.rect(self.virtual_screen, (255, 140, 0), progress_rect, border_radius=15)
+            pygame.draw.rect(self.virtual_screen, progress_color, progress_rect, border_radius=15)
 
     def cv_to_pygame(self, frame):
         """Converts an OpenCV (BGR) image to a Pygame surface."""
@@ -245,7 +256,6 @@ class FullscreenUI:
                 self.running = False
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                # Transform mouse position for collision detection based on rotation constant
                 mouse_pos = self.get_transformed_mouse_pos(event.pos)
 
                 if self.current_screen == "main_menu":
@@ -259,10 +269,8 @@ class FullscreenUI:
                     if self.cancel_rect.collidepoint(mouse_pos):
                         self.current_screen = self.previous_screen
 
-                # --- Change: Use correct rects for collision on preview screens ---
                 elif self.current_screen in ["scanner", "preview_mask", "normalized_mask"]:
                     if self.next_rect.collidepoint(mouse_pos):
-                        # Action for the right button (next/continue)
                         if self.current_screen == "scanner":
                             self.snap_image()
                         elif self.current_screen == "preview_mask":
@@ -273,15 +281,19 @@ class FullscreenUI:
                             self.current_screen = "generating_stl"
                             
                     elif self.try_again_rect.collidepoint(mouse_pos):
-                        # Action for the left button (try again/back)
                         self.start_camera_feeds()
                 
                 elif self.current_screen == "preview_stl":
                     if self.package_rect.collidepoint(mouse_pos):
-                        self.current_screen = "main_menu"
-                    # Use the special rect for this screen's 'try again' button
+                        self.current_screen = "cutting_material"
+                        self.loading_start_time = pygame.time.get_ticks()
+                        self.progress = 0
                     elif self.stl_try_again_rect.collidepoint(mouse_pos):
                         self.start_camera_feeds()
+                
+                elif self.current_screen == "cutting_done":
+                    if self.done_next_rect.collidepoint(mouse_pos):
+                        self.current_screen = "main_menu"
 
     def start_camera_feeds(self):
         """Sets the screen to the camera preview."""
@@ -303,7 +315,6 @@ class FullscreenUI:
         """Converts an image to a clean, filled, binary mask of the largest object."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-        # Use the color threshold constant
         _, binary = cv2.threshold(blurred, COLOR_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
 
         kernel = np.ones((3, 3), np.uint8)
@@ -320,10 +331,16 @@ class FullscreenUI:
         return mask
 
     def normalize_mask(self, mask):
-        """Rotates, crops, and scales a mask to a standard size and position."""
+        """
+        Rotates, crops, and scales a mask to a standard size and position.
+        This version includes a fix to prevent crashes on empty masks post-rotation.
+        """
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        blank_canvas = np.zeros((400, 300), dtype=np.uint8)
+
         if not contours:
-            return mask
+            return blank_canvas
 
         largest = max(contours, key=cv2.contourArea)
         rect = cv2.minAreaRect(largest)
@@ -338,21 +355,26 @@ class FullscreenUI:
         rotated = cv2.warpAffine(mask, rotation_matrix, (w, h), flags=cv2.INTER_NEAREST)
 
         contours, _ = cv2.findContours(rotated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return blank_canvas
+
         largest = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest)
         cropped = rotated[y:y+h, x:x+w]
+
+        if w == 0 or h == 0:
+            return blank_canvas
 
         TARGET_WIDTH = 300
         scale = TARGET_WIDTH / w
         new_size = (TARGET_WIDTH, int(h * scale))
         resized = cv2.resize(cropped, new_size, interpolation=cv2.INTER_NEAREST)
 
-        canvas = np.zeros((400, 300), dtype=np.uint8)
-        y_offset = (canvas.shape[0] - resized.shape[0]) // 2
-        x_offset = (canvas.shape[1] - resized.shape[1]) // 2
-        canvas[y_offset:y_offset + resized.shape[0], x_offset:x_offset + resized.shape[1]] = resized
+        y_offset = (blank_canvas.shape[0] - resized.shape[0]) // 2
+        x_offset = (blank_canvas.shape[1] - resized.shape[1]) // 2
+        blank_canvas[y_offset:y_offset + resized.shape[0], x_offset:x_offset + resized.shape[1]] = resized
 
-        return canvas
+        return blank_canvas
 
     def generate_stl_and_preview(self):
         """
@@ -364,19 +386,17 @@ class FullscreenUI:
             self.current_screen = "main_menu"
             return
         
-        # Stage 1: Initialization
         self.progress = 0.1
         self.draw_generating_stl_screen()
-        self.render_and_flip_screen() # Update display
+        self.render_and_flip_screen()
 
         z_dim, y_dim, x_dim = 30, 30, 30
         side_mask_resized = cv2.resize(self.normalized_mask0, (x_dim, y_dim), interpolation=cv2.INTER_NEAREST)
         top_mask_resized = cv2.resize(self.normalized_mask2, (x_dim, z_dim), interpolation=cv2.INTER_NEAREST)
         
-        # Stage 2: Voxel Carving
         self.progress = 0.25
         self.draw_generating_stl_screen()
-        self.render_and_flip_screen() # Update display
+        self.render_and_flip_screen()
 
         side_silhouette = side_mask_resized > 128
         top_silhouette = top_mask_resized > 128
@@ -385,19 +405,17 @@ class FullscreenUI:
         volume = np.logical_and(volume_from_side, volume_from_top)
         volume = np.pad(volume, 1, constant_values=False)
         
-        # Stage 3: Marching Cubes
         self.progress = 0.35
         self.draw_generating_stl_screen()
-        self.render_and_flip_screen() # Update display
+        self.render_and_flip_screen()
 
         spacing_z, spacing_y, spacing_x = 400.0/z_dim, 400.0/y_dim, 300.0/x_dim
         verts, faces, _, _ = measure.marching_cubes(volume, level=0.5, spacing=(spacing_z, spacing_y, spacing_x))
         self.progress = 0.45
         
-        # Stage 4: Creating STL Mesh
         self.progress = 0.75
         self.draw_generating_stl_screen()
-        self.render_and_flip_screen() # Update display
+        self.render_and_flip_screen()
 
         stl_mesh = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype))
         for i, f in enumerate(faces):
@@ -405,10 +423,9 @@ class FullscreenUI:
         stl_mesh.save('/home/pi/repo/model.stl')
         print("STL file saved as 'model.stl'")
         
-        # Stage 5: Rendering Preview
         self.progress = 0.9
         self.draw_generating_stl_screen()
-        self.render_and_flip_screen() # Update display
+        self.render_and_flip_screen()
 
         fig = plt.figure(figsize=(4, 3), dpi=100)
         ax = fig.add_subplot(111, projection='3d')
@@ -438,6 +455,7 @@ class FullscreenUI:
         self.progress = 1.0
         self.current_screen = "preview_stl"
 
+
     def update_camera_frames(self):
         """Reads the latest frames from the active cameras."""
         if self.cap0.isOpened():
@@ -463,15 +481,12 @@ class FullscreenUI:
         while self.running:
             self.handle_events()
             
-            # This logic now runs continuously in the background
             self.update_camera_frames()
 
-            # Turn off LEDs by default, turn on only where needed
             if self.current_screen != "scanner":
                 neo.fill_strip(0, 0, 0)
                 neo.update_strip()
 
-            # --- Screen Drawing (on virtual_screen) ---
             if self.current_screen == "main_menu":
                 self.draw_main_menu()
             elif self.current_screen == "white_cancel":
@@ -483,18 +498,24 @@ class FullscreenUI:
             elif self.current_screen == "normalized_mask":
                 self.draw_normalized_preview()
             elif self.current_screen == "generating_stl":
-                # The generation function handles its own drawing and flipping
                 self.generate_stl_and_preview()
-                continue # Skip the main flip at the end of the loop
+                continue
             elif self.current_screen == "preview_stl":
                 self.draw_stl_preview_screen()
+            elif self.current_screen == "cutting_material":
+                elapsed_time = pygame.time.get_ticks() - self.loading_start_time
+                if elapsed_time >= 5000:
+                    self.current_screen = "cutting_done"
+                else:
+                    self.progress = elapsed_time / 5000.0
+                self.draw_cutting_screen()
+            elif self.current_screen == "cutting_done":
+                self.draw_cutting_done_screen()
 
-            # Centralized rendering step
             self.render_and_flip_screen()
             
             self.clock.tick(30)
 
-        # --- Cleanup on Exit ---
         print("Cleaning up and exiting...")
         neo.fill_strip(0, 0, 0)
         neo.update_strip()

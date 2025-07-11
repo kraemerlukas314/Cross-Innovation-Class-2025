@@ -12,9 +12,9 @@ from skimage import measure
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import art3d
 
-ROTATE_SCREEN = False
+ROTATE_SCREEN = True
 COLOR_THRESHOLD = 60
-LED_BRIGHTNESS = 0.3
+LED_BRIGHTNESS = 30
 
 neo = Pi5Neo('/dev/spidev0.0', 144, 800)
 
@@ -46,7 +46,7 @@ class FullscreenUI:
         self.progress = 0
         self.loading_start_time = 0 
         
-        self.led_value = int(255 * LED_BRIGHTNESS)
+        self.led_value = LED_BRIGHTNESS
 
         self.cap0 = cv2.VideoCapture(0)
         self.cap2 = cv2.VideoCapture(2)
@@ -129,6 +129,7 @@ class FullscreenUI:
     def draw_camera_preview(self):
         """Draws the live camera feeds."""
         self.virtual_screen.fill((255, 255, 255))
+        time.sleep(0.1)
         neo.fill_strip(self.led_value, self.led_value, self.led_value)
         neo.update_strip()
         

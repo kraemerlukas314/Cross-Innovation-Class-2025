@@ -334,7 +334,6 @@ class FullscreenUI:
     def normalize_mask(self, mask):
         """
         Rotates, crops, and scales a mask to a standard size and position.
-        This version includes a fix to prevent crashes on empty masks post-rotation.
         """
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
